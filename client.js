@@ -1,40 +1,27 @@
 const express = require('express');
 const redis = require('ioredis');
-
-const app = express();
-app.use(express.json());
+const router = express.Router();
 
 const redisClient = new redis();
 
-// Function to validate ClientInfo
-function validateClientInfo(clientInfo) {
-    if (!clientInfo || typeof clientInfo !== 'object') {
-        return false;
-    }
-    const requiredFields = ['MsgType', 'OperationType', 'TenantId', 'OSMId', 'ClientId', 'ClientName'];
-    return requiredFields.every(field => clientInfo.hasOwnProperty(field));
-}
-
 // API endpoint for handling client operations
-app.post('/client-operation', (req, res) => {
+router.post('/app', (req, res) => {
     const { MsgType, OperationType, TenantId, OSMId, ClientId, ClientName } = req.body;
-    const body=req.body;
-    if (!validateClientInfo(req.body)) {
-        return res.status(400).json({ error: 'Invalid client information' });
-    }
+    const body = req.body;
 
     switch (OperationType) {
         case 100:
-            addClient(MsgType,TenantId, OSMId, ClientId, ClientName,OperationType, res);
+            console.log("add client operations")
+            addClient(MsgType, TenantId, OSMId, ClientId, ClientName, OperationType, res);
             break;
         case 101:
-            updateClient(TenantId, OSMId, ClientId, ClientName,body,OperationType, res);
+            updateClient(TenantId, OSMId, ClientId, ClientName, body, OperationType, res);
             break;
         case 102:
-            deleteClient(OperationType,TenantId, OSMId, ClientId, res);
+            deleteClient(OperationType, TenantId, OSMId, ClientId, res);
             break;
         case 103:
-            getClient(OperationType,TenantId, OSMId, ClientId, res);
+            getClient(OperationType, TenantId, OSMId, ClientId, res);
             break;
         case 104:
             getAllClients(res);
@@ -45,16 +32,19 @@ app.post('/client-operation', (req, res) => {
 });
 
 // Function to add a client
-function addClient(MsgType,TenantId, OSMId, ClientId, ClientName,OperationType, res) {
+async function addClient(MsgType, TenantId, OSMId, ClientId, ClientName, OperationType, res) {
     // Implementation for adding a client
+ 
     const key = `${TenantId}_${OSMId}_${ClientId}`;
-    redisClient.exists(key, (err, exists) => {
+     
+    await redisClient.exists(key, (err, exists) => {
         if (err) {
             return res.status(500).json({ error: 'Internal Server Error' });
         }
         if (exists) {
             return res.status(409).json({ error: 'Client already exists' });
         }
+    })
 
         const clientInfo = {
             MsgType,
@@ -65,17 +55,23 @@ function addClient(MsgType,TenantId, OSMId, ClientId, ClientName,OperationType, 
             ClientName
         };
 
-        redisClient.set(key, JSON.stringify(clientInfo), (err) => {
-            if (err) {
-                return res.status(500).json({ error: 'Internal Server Error' });
-            }
-            res.json({ message: 'Client added successfully' });
-        });
-    });
-}
+    const id = ClientId
+    const value = JSON.stringify(clientInfo)
+    const data =  await redisClient.hset(key, id,value) 
+       
+    if (data) {
+        await redisClient.sadd("clientDetails", key);
+        res.status(200).json({ message: clientInfo });
+        return data;
+      }
+       
+      
+    }
+   
+ 
 
 // Function to update a client
-function updateClient(TenantId, OSMId, ClientId, NewClientName,body,OperationType, res) {
+function updateClient(TenantId, OSMId, ClientId, NewClientName, body, OperationType, res) {
     const key = `${TenantId}_${OSMId}_${ClientId}`; // Constructing the key
 
     redisClient.exists(key, (err, exists) => {
@@ -86,7 +82,7 @@ function updateClient(TenantId, OSMId, ClientId, NewClientName,body,OperationTyp
             return res.status(404).json({ error: 'Client not found' });
         }
 
-        redisClient.set(key, body, (err) => {
+        redisClient.set(key, JSON.stringify(body), (err) => {
             if (err) {
                 return res.status(500).json({ error: 'Internal Server Error' });
             }
@@ -96,7 +92,7 @@ function updateClient(TenantId, OSMId, ClientId, NewClientName,body,OperationTyp
 }
 
 // Function to delete a client
-function deleteClient(OperationType,TenantId, OSMId, ClientId, res) {
+function deleteClient(OperationType, TenantId, OSMId, ClientId, res) {
     const key = `${TenantId}_${OSMId}_${ClientId}`;
     redisClient.del(key, (err, reply) => {
         if (err) {
@@ -116,43 +112,41 @@ function getClient(OperationType, TenantId, OSMId, ClientId, res) {
         if (err) {
             return res.status(500).json({ error: 'Internal Server Error' });
         }
-        const clientInfo = JSON.parse(reply);
+
+        // Check if reply is null or undefined
+        if (!reply) {
+            return res.status(404).json({ error: 'Client not found' });
+        }
+
+        let clientInfo;
+        try {
+            clientInfo = JSON.parse(reply);
+        } catch (e) {
+            console.error('Error parsing JSON:', e);
+            return res.status(500).json({ error: 'Error parsing JSON data' });
+        }
+
         res.json(clientInfo);
     });
 }
 
 // Function to get all clients
-function getAllClients(res) {
-    redisClient.keys('*', (err, keys) => {
-        if (err) {
-            return res.status(500).json({ error: 'Internal Server Error' });
+async function getAllClients(res) {
+ 
+    const hashdata = await redisClient.smembers("clientDetails");
+    let data = [];
+console.log({hashdata})
+    await Promise.all(
+      hashdata.map(async (element) => {
+        let hashData = await redisClient.hgetall(element);
+        hashData = JSON.parse(JSON.stringify(hashData));
+        for (var key in hashData) {
+          hashData[key] = data.push(JSON.parse(hashData[key]));
         }
-        if (keys.length === 0) {
-            return res.json([]);
-        }
-        const fetchClientPromises = keys.map(key => {
-            return new Promise((resolve, reject) => {
-                redisClient.get(key, (err, reply) => {
-                    if (err) {
-                        reject(err);
-                    } else {
-                        resolve(JSON.parse(reply));
-                    }
-                });
-            });
-        });
-
-        Promise.all(fetchClientPromises)
-            .then(clients => {
-                res.json(clients);
-            })
-            .catch(err => {
-                res.status(500).json({ error: 'Internal Server Error' });
-            });
-    });
+      })
+    );
+    res.json(data);
+    return data; 
 }
 
-const PORT = process.env.PORT || 2000;
-app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
-});
+module.exports = router;
